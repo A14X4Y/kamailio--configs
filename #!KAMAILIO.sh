@@ -160,6 +160,8 @@ modparam("sipdump", "enable", 1)
 modparam("debugger", "cfgtrace", 1)
 #!endif
 
+modparam("cfgutils", "lock_set_size", 4)
+
 ####### Routing Logic ########
 request_route {
 
