@@ -1,0 +1,700 @@
+#!KAMAILIO
+
+##!define WITH_DEBUG
+##!define WITH_SIPDUMP
+#!define WITH_TLS
+##!define WITH_BRIDGE_ON_FAIL
+
+#!substdef "!MY_SIP_PORT!5060!g"
+#!substdef "!MY_WS_PORT!8090!g"
+#!substdef "!MY_WSS_PORT!4443!g"
+
+#!substdef "!MY_IP4_ADDR!80.87.109.88!g"
+#!substdef "!MY_DOMAIN!go2.crowncode.dev!g"
+
+# *** Value defines - IDs used later in config
+
+# - flags
+#        FLT_ - per transaction (message) flags
+#        FLB_ - per branch flags
+#!define FLT_NATS 5
+
+#!define FLB_NATB 6
+#!define FLB_NATSIPPING 7
+#!define FLB_RTPWS 8
+#!define FLB_IPV6 9
+#!define FLB_V4V6 10
+#!define FLB_BRIDGE 11
+
+####### Global Parameters #########
+
+### LOG Levels: 3=DBG, 2=INFO, 1=NOTICE, 0=WARN, -1=ERR
+#!ifdef WITH_DEBUG
+debug=4
+log_stderror=no
+#!else
+debug=2
+log_stderror=no
+#!endif
+
+memdbg=5
+memlog=5
+
+log_facility=LOG_LOCAL0
+
+fork=yes
+children=1
+
+#!ifdef WITH_TLS
+enable_tls=yes
+#!endif
+
+port=MY_SIP_PORT
+listen=udp:MY_IP4_ADDR:MY_SIP_PORT
+listen=tcp:MY_IP4_ADDR:MY_WS_PORT
+#!ifdef WITH_TLS
+listen=tls:MY_IP4_ADDR:MY_WSS_PORT
+#!endif
+
+use_dns_cache = off             # Use KAMAILIO internal DNS cache
+use_dns_failover = off  # Depends on KAMAILIO internal DNS cache
+dns_srv_loadbalancing = off     #
+dns_try_naptr = off             #
+dns_retr_time=1                 # Time in seconds before retrying a DNS request
+dns_retr_no=3                   # Number of DNS retransmissions before giving up
+
+# Set protocol preference order - ignore target priority
+dns_naptr_ignore_rfc= yes       # Ignore target NAPTR priority
+dns_tls_pref=50                 # First priority: TLS
+dns_tcp_pref=30                 # Second priority: TCP
+dns_udp_pref=10                 # Third priority: UDP
+
+tcp_connection_lifetime=3604
+tcp_accept_no_cl=yes
+tcp_rd_buf_size=16384
+
+loadmodule "kex.so"
+loadmodule "corex.so"
+loadmodule "tm.so"
+loadmodule "tmx.so"
+loadmodule "sl.so"
+loadmodule "rr.so"
+loadmodule "pv.so"
+loadmodule "maxfwd.so"
+loadmodule "usrloc.so"
+loadmodule "registrar.so"
+loadmodule "textops.so"
+loadmodule "siputils.so"
+loadmodule "xlog.so"
+loadmodule "sanity.so"
+loadmodule "ctl.so"
+loadmodule "cfg_rpc.so"
+loadmodule "sdpops.so"
+loadmodule "textopsx.so"
+loadmodule "stun.so"
+loadmodule "xhttp.so"
+loadmodule "websocket.so"
+loadmodule "nathelper.so"
+loadmodule "rtpengine.so"
+loadmodule "outbound.so"
+loadmodule "htable.so"
+loadmodule "tsilo.so"
+loadmodule "exec.so"
+loadmodule "cfgutils.so"
+#!ifdef WITH_DEBUG
+loadmodule "debugger.so"
+#!endif
+#!ifdef WITH_SIPDUMP
+loadmodule "sipdump.so"
+#!endif
+#!ifdef WITH_TLS
+loadmodule "tls.so"
+#!endif
+
+# ----------------- setting module-specific parameters ---------------
+
+
+# ----- rr params -----
+# add value to ;lr param to cope with most of the UAs
+modparam("rr", "enable_full_lr", 1)
+# do not append from tag to the RR (no need for this script)
+modparam("rr", "append_fromtag", 0)
+
+# ----- registrar params -----
+modparam("registrar", "method_filtering", 1)
+modparam("registrar", "max_expires", 300)
+modparam("usrloc", "db_mode", 0)
+
+# ----- rtpengine params -----
+modparam("rtpengine", "rtpengine_sock", "udp:127.0.0.1:22222")
+modparam("rtpengine", "extra_id_pv", "$avp(extra_id)")
+
+
+# ----- nathelper params -----
+modparam("nathelper", "natping_interval", 30)
+modparam("nathelper", "ping_nated_only", 1)
+modparam("nathelper", "sipping_bflag", FLB_NATSIPPING)
+modparam("nathelper", "sipping_from", "sip:pinger@MY_IP4_ADDR")
+modparam("nathelper|registrar", "received_avp", "$avp(RECEIVED)")
+modparam("usrloc", "nat_bflag", FLB_NATB)
+modparam("htable", "htable","vtp=>size=10;autoexpire=120;dbtable=htable;dbmode=0                                                                                                                                                                                                                                             ")
+
+
+# ----- websocket params -----
+modparam("websocket", "keepalive_mechanism", 1)
+
+# ----- corex params -----
+modparam("corex", "alias_subdomains", "MY_DOMAIN")
+
+#!ifdef WITH_TLS
+# ----- tls params -----
+modparam("tls", "config", "/etc/kamailio/tls.cfg")
+#!endif
+
+#!ifdef WITH_SIPDUMP
+modparam("sipdump", "enable", 1)
+#!endif
+
+#!ifdef WITH_DEBUG
+# ----- debugger params -----
+modparam("debugger", "cfgtrace", 1)
+#!endif
+
+####### Routing Logic ########
+request_route {
+
+        # per request initial checks
+        route(REQINIT);
+
+        xlog("L_INFO", "START: $rm from $fu (IP:$si:$sp)\n");
+
+        if (nat_uac_test(64)) {
+                # Do NAT traversal stuff for requests from a WebSocket
+                # connection - even if it is not behind a NAT!
+                # This won't be needed in the future if Kamailio and the
+                # WebSocket client support Outbound and Path.
+                xlog("L_INFO", "Current Contact header: $hdr(Contact)\n");
+
+                force_rport();
+                if (is_method("REGISTER")) {
+                        fix_nated_register();
+
+                #       save("location", "0x07");
+
+                #       remove_hf("Contact");
+                #       insert_hf("Contact: <sip:$fU@MY_IP4_ADDR:5060>\r\n","Call-ID");
+
+                } else if (!add_contact_alias()) {
+                        xlog("L_ERR", "Error aliasing contact <$ct>\n");
+                        sl_send_reply("400", "Bad Request");
+                        exit;
+                }
+        }
+
+        if (is_method("INVITE")) {
+                xlog("L_INFO", "Destination: $ru, toUser: $tU, source: $si, fromUser: $fU, callerId: $ci\n");
+               # lookup("location");
+
+                if (!lookup("location")) {
+                        send_reply("100", "Trying");
+                        route(SUSPEND);
+                } else {
+                        t_relay();
+                        ts_store();
+                        $sht(vtp=>stored::$rU) = 1;
+                        xdbg("Stored transaction [$T(id_index):$T(id_label)] $fU=> $rU\n");
+                }
+                route(SENDPUSH);
+        }
+
+
+        if (is_method("OPTIONS")) {
+                options_reply();
+                exit;
+        }
+
+        # NAT detection
+        route(NATDETECT);
+
+        msg_apply_changes();
+        xlog("L_INFO", "Setting new Contact header: $hdr(Contact)\n");
+
+        # CANCEL processing
+        if (is_method("CANCEL")) {
+                if (t_check_trans()) {
+                        route(RELAY);
+                }
+                exit;
+        }
+
+        # handle requests within SIP dialogs route(WITHINDLG);
+
+        ### only initial requests (no To tag)
+
+        t_check_trans();
+
+        # record routing for dialog forming requests (in case they are routed)
+        # - remove preloaded route headers
+        remove_hf("Route");
+        if (is_method("INVITE")) {
+                record_route();
+        }
+
+        route(REGISTRAR);
+
+        # dispatch requests to foreign domains
+        route(SIPOUT);
+
+        ### requests for my local domains
+
+        # handle registrations
+        #route(REGISTRAR);
+
+#       if ($rU == $null) {
+                # request with no Username in RURI
+#               sl_send_reply("484","Address Incomplete");
+#               exit;
+#       }
+
+        # user location service
+        route(LOCATION);
+}
+
+route[SUSPEND] {
+    if (!t_suspend()) {
+        xlog("Failed suspending transaction [$T(id_index):$T(id_label)]\n");
+        send_reply("501", "Unknown destination");
+        exit;
+    }
+
+    xdbg("Suspended transaction [$T(id_index):$T(id_label)] $fU => $rU\n");
+    $sht(vtp=>join::$rU) = "" + $T(id_index) + ":" + $T(id_label);
+    xdbg("HTable key value [$sht(vtp=>join::$rU)]\n");
+}
+
+route[SENDPUSH] {
+        xlog("L_INFO", "EXEC MSG \n");
+        exec_msg("curl -X POST -H 'Content-Type: application/json' -d '{\"query\ mutation MyMutation { sendIntercomNotification(callerId: \\\"$ci\\\", destination: \\\"$ru\\\", fromUser: \\\"$fU\\\", source: \\\"$si\\\", toUser: \\\"$tU\}\"}' https://2f53-77-223-85-221.ngrok-free.app/api/graphql");
+        sl_send_reply(100, "Pushing...");
+
+}
+
+route[PUSHJOIN] {
+        $var(hjoin) = 0;
+
+        lock("$tU");
+
+        $var(hjoin) = $sht(vtp=>join::$tU);
+        $var(hstored) = $sht(vtp=>stored::$tU);
+        $sht(vtp=>join::$tU) = $null;
+
+        unlock("$tU");
+
+        if ($var(hjoin) == 0) {
+                if ($var(hstored))
+                        ts_append("location", "$tU");
+                return;
+        }
+
+        $var(id_index) = $(var(hjoin){s.select,0,:}{s.int});
+        $var(id_label) = $(var(hjoin){s.select,1,:}{s.int});
+
+        xdbg("resuming transaction [$var(id_index):$var(id_label)] $tU ($var(hjoin))\n");
+        t_continue("$var(id_index)", "$var(id_label)", "INVRESUME");
+}
+
+route[INVRESUME] {
+        lookup("location");
+        t_relay();
+        ts_store();
+        $sht(vtp=>stored::$rU) = 1;
+        xdbg("stored transaction [$T(id_index):$T(id_label)] $fU => $rU\n");
+}
+
+
+
+
+# Wrapper for relaying requests
+route[RELAY] {
+        # enable additional event routes for forwarded requests
+        # - serial forking, RTP relaying handling, a.s.o.
+        if (is_method("INVITE|BYE|UPDATE")) {
+                if (!t_is_set("branch_route")) {
+                        t_on_branch("MANAGE_BRANCH");
+                }
+        }
+
+        if (is_method("INVITE|UPDATE")) {
+                if (!t_is_set("onreply_route")) {
+                        t_on_reply("MANAGE_REPLY");
+                }
+        }
+
+        if (is_method("INVITE")) {
+                if (!t_is_set("failure_route")) {
+                        t_on_failure("MANAGE_FAILURE");
+                }
+        }
+
+        if (!t_relay()) {
+                sl_reply_error();
+        }
+        exit;
+}
+
+# Per SIP request initial checks
+route[REQINIT] {
+        if (!mf_process_maxfwd_header("10")) {
+                sl_send_reply("483","Too Many Hops");
+                exit;
+        }
+
+        if (!sanity_check("1511", "7")) {
+                xlog("Malformed SIP message from $si:$sp\n");
+                exit;
+        }
+}
+
+# Handle requests within SIP dialogs
+route[WITHINDLG] {
+        if (has_totag()) {
+                # sequential request withing a dialog should
+                # take the path determined by record-routing
+                if (loose_route()) {
+                        if ($du == "") {
+                                if (!handle_ruri_alias()) {
+                                        xlog("L_ERR", "Bad alias <$ru>\n");
+                                        sl_send_reply("400", "Bad Request");
+                                        exit;
+                                }
+                        }
+                        route(DLGURI);
+                        if (is_method("ACK")) {
+                                # ACK is forwarded statelessy
+                                route(NATMANAGE);
+                        } else if (is_method("NOTIFY")) {
+                                # Add Record-Route for in-dialog NOTIFY as per R                                                                                                                                                                                                                                             FC 6665.
+                                record_route();
+                        }
+                        route(RELAY);
+                } else {
+                        if (is_method("ACK")) {
+                                if (t_check_trans()) {
+                                        # no loose-route, but stateful ACK;
+                                        # must be an ACK after a 487
+                                        # or e.g. 404 from upstream server
+                                        route(RELAY);
+                                        exit;
+                                } else {
+                                        # ACK without matching transaction ... i                                                                                                                                                                                                                                             gnore and discard
+                                        exit;
+                                }
+                        }
+                        sl_send_reply("404","Not here");
+                }
+                exit;
+        }
+}
+
+# Handle SIP registrations
+route[REGISTRAR] {
+        if (is_method("REGISTER")) {
+                if (!save("location"))
+                         sl_reply_error();
+                 route(PUSHJOIN);
+                 exit;
+               # if (isflagset(FLT_NATS)) {
+                #        setbflag(FLB_NATB);
+                        # uncomment next line to do SIP NAT pinging
+                        ## setbflag(FLB_NATSIPPING);
+                #}
+
+                #if (!save("location")) {
+                 #       sl_reply_error();
+                #}
+
+                #exit;
+        }
+}
+
+# USER location service
+route[LOCATION] {
+        if (!lookup("location")) {
+                $var(rc) = $rc;
+                t_newtran();
+                switch ($var(rc)) {
+                        case -1:
+                        case -3:
+                                send_reply("404", "Not Found");
+                                exit;
+                        case -2:
+                                send_reply("405", "Method Not Allowed");
+                                exit;
+                }
+        }
+
+        route(RELAY);
+        exit;
+}
+
+# Caller NAT detection route
+route[NATDETECT] {
+
+        force_rport();
+        if (nat_uac_test("19")) {
+                if (is_method("REGISTER")) {
+                        fix_nated_register();
+                } else if (is_first_hop()) {
+                        set_contact_alias();
+                }
+                setflag(FLT_NATS);
+        }
+        return;
+}
+
+# NAT handling
+route[NATMANAGE] {
+        if (is_request()) {
+                if (has_totag()) {
+                        if (check_route_param("nat=yes")) {
+                                setbflag(FLB_NATB);
+                        }
+
+                        if (check_route_param("rtp=bridge")) {
+                                setbflag(FLB_BRIDGE);
+                        }
+
+                        if (check_route_param("rtp=ws")) {
+                                setbflag(FLB_RTPWS);
+                        }
+                }
+        }
+
+        if (!isbflagset(FLB_BRIDGE)) {
+                return;
+        }
+
+        if (
+                !(isflagset(FLT_NATS)
+                || isbflagset(FLB_NATB)
+                || isbflagset(FLB_RTPWS)
+        )) {
+                return;
+        }
+
+        $xavp(r=>$T_branch_idx) = "replace-origin replace-session-connection";
+        
+        if (!nat_uac_test("8")) {
+                $xavp(r=>$T_branch_idx) = $xavp(r=>$T_branch_idx) + " trust-address";
+        }
+
+
+        if (is_request()) {
+                if (!has_totag()) {
+                        if (!t_is_failure_route()) {
+                                $avp(extra_id) = @via[1].branch + $T_branch_idx;
+                                $xavp(r=>$T_branch_idx) = $xavp(r=>$T_branch_idx) + " via-branch=extra";
+                        }
+                }
+        }
+
+        if (is_reply()) {
+                $avp(extra_id) = @via[2].branch + $T_branch_idx;
+                $xavp(r=>$T_branch_idx) = $xavp(r=>$T_branch_idx) + " via-branch=extra";
+        }
+
+        if (isbflagset(FLB_RTPWS)) {
+                if ($proto =~ "ws") { # web --> SIP
+                        $xavp(r=>$T_branch_idx) = $xavp(r=>$T_branch_idx) + " rtcp-mux-demux SDES=off ICE=remove RTP/AVP codec-mask=all codec-transcode=PCMU codec-transcode=PCMA codec-transcode=telephone-event";
+                } else { # SIP --> web
+                        sdp_remove_media("video");
+                        $xavp(r=>$T_branch_idx) = $xavp(r=>$T_branch_idx) + " rtcp-mux-offer generate-mid SDES-off ICE=force DTLS=passive UDP/TLS/RTP/SAVPF codec-mask=all codec-transcode=PCMU codec-transcode=PCMA codec-transcode=telephone-event";
+                }
+        } else {
+                if ($proto =~ "ws") { # web --> web
+                        $xavp(r=>$T_branch_idx) = $xavp(r=>$T_branch_idx) + " generate-mid SDES=off ICE=force";
+                }
+                # else {
+                        # $xavp(r=>$T_branch_idx) = $xavp(r=>$T_branch_idx) + "";
+                # }
+        }
+
+        xlog("L_INFO", "NATMANAGE branch_id:$T_branch_idx ruri: $ru, method:$rm,status:$rs, extra_id: $avp(extra_id), rtpengine_manage: $xavp(r=>$T_branch_idx)\n");
+
+        rtpengine_manage($xavp(r=>$T_branch_idx));
+
+        if (is_request()) {
+                if (!has_totag()) {
+                        if (t_is_branch_route()) {
+                                if (isbflagset(FLB_NATB)) {
+                                        add_rr_param(";nat=yes");
+                                }
+
+                                if (isbflagset(FLB_BRIDGE)) {
+                                        add_rr_param(";rtp=bridge");
+                                }
+
+                                if (isbflagset(FLB_RTPWS)) {
+                                        add_rr_param(";rtp=ws");
+                                }
+                        }
+                }
+        }
+
+        if (is_reply()) {
+                if (isbflagset(FLB_NATB)) {
+                        if (is_first_hop()) {
+                                if (af == INET) {
+                                        set_contact_alias();
+                                }
+                        }
+                }
+        }
+        return;
+}
+
+# URI update for dialog requests
+route[DLGURI] {
+        if (!isdsturiset()) {
+                handle_ruri_alias();
+        }
+        return;
+}
+
+# Routing to foreign domains
+route[SIPOUT] {
+        if (!uri == myself) {
+                append_hf("P-hint: outbound\r\n");
+                route(RELAY);
+        }
+}
+
+route[BRIDGING] {
+        if (!has_totag()) {
+                if ($proto =~ "ws" && !($ru =~ "transport=ws")) { # Coming from WS, NOT to WS 
+                    setbflag(FLB_RTPWS); # Need bridging
+                } else if (!($proto =~ "ws") && $ru =~ "transport=ws") { # Coming from NOT WS, going to WS 
+                    setbflag(FLB_RTPWS); # Need bridging
+                }
+        }
+}
+
+# manage outgoing branches
+branch_route[MANAGE_BRANCH] {
+        xlog("L_INFO", "MANAGE_BRANCH: New branch [$T_branch_idx] to $ru\n");
+
+        t_on_branch_failure("rtpengine");
+
+#!ifndef WITH_BRIDGE_ON_FAIL
+        setbflag(FLB_BRIDGE);
+#!endif
+
+        route(BRIDGING);
+        route(NATMANAGE);
+}
+
+# manage incoming replies
+onreply_route[MANAGE_REPLY] {
+        xdbg("incoming reply\n");
+        if (status =~ "[12][0-9][0-9]") {
+                route(NATMANAGE);
+        }
+}
+
+# manage failure routing cases
+failure_route[MANAGE_FAILURE] {
+        xlog("L_INFO", "Failure: $rs");
+}
+
+onreply_route {
+        if ((($Rp == MY_WS_PORT) && !(proto == WS ))) {
+                xlog("L_WARN", "SIP response received on $Rp\n");
+                drop;
+        }
+
+        if (nat_uac_test(64)) {
+                # Do NAT traversal stuff for replies to a WebSocket connection
+                # - even if it is not behind a NAT!
+                # This won't be needed in the future if Kamailio and the
+                # WebSocket client support Outbound and Path.
+                add_contact_alias();
+        }
+}
+
+event_route[tm:branch-failure:rtpengine] {
+        xlog("L_INFO", "BRANCH FAILED: $sel(via[1].branch) + $T_branch_idx");
+
+#!ifdef WITH_BRIDGE_ON_FAIL
+        if (!isbflagset(FLB_BRIDGE) && t_check_status("415|488")) {
+                t_reuse_branch();
+                setbflag(FLB_BRIDGE);
+                xlog("L_INFO", "event_route[branch-failure:rtpengine]: trying again\n");
+
+                route(RELAY);
+        } else {
+                $avp(extra_id) = @via[1].branch + $T_branch_idx;
+                rtpengine_delete("via-branch=extra");
+                xlog("L_INFO", "event_route[branch-failure:rtpengine]: failed\n");
+        }
+#!else
+        $avp(extra_id) = @via[1].branch + $T_branch_idx;
+        rtpengine_delete("via-branch=extra");
+#!endif
+}
+
+event_route[xhttp:request] {
+        set_reply_close();
+        set_reply_no_connect();
+
+        if ($Rp != MY_WS_PORT
+#!ifdef WITH_TLS
+            && $Rp != MY_WSS_PORT
+#!endif
+        ) {
+                xlog("L_WARN", "HTTP request received on $Rp\n");
+                xhttp_reply("403", "Forbidden", "", "");
+                exit;
+        }
+
+        xlog("L_INFO", "HTTP Request Received\n");
+
+        if ($hdr(Upgrade) =~ "websocket"
+                && $hdr(Connection) =~ "Upgrade"
+                && $rm =~ "GET"
+        ) {
+
+                # Validate Host - make sure the client is using the correct
+                # alias for WebSockets
+                if ($hdr(Host) == $null || !is_myself("sip:" + $hdr(Host))) {
+                        xlog("L_WARN", "Bad host $hdr(Host)\n");
+                        xhttp_reply("403", "Forbidden", "", "");
+                        exit;
+                }
+
+                # Optional... validate Origin - make sure the client is from an
+                # authorised website.   For example,
+                #
+                # if ($hdr(Origin) != "https://example.com"
+                #       && $hdr(Origin) != "https://example.com") {
+                #       xlog("L_WARN", "Unauthorised client $hdr(Origin)\n");
+                #       xhttp_reply("403", "Forbidden", "", "");
+                #       exit;
+                # }
+
+                # Optional... perform HTTP authentication
+
+                # ws_handle_handshake() exits (no further configuration file
+                # processing of the request) when complete.
+                if (ws_handle_handshake()) {
+                        # Optional... cache some information about the
+                        # successful connection
+                        exit;
+                }
+        }
+
+        xhttp_reply("404", "Not Found", "", "");
+}
+
+event_route[websocket:closed] {
+        xlog("L_INFO", "WebSocket connection from $si:$sp has closed\n");
+}
