@@ -270,8 +270,10 @@ route[SUSPEND] {
     }
 
     xdbg("Suspended transaction [$T(id_index):$T(id_label)] $fU => $rU\n");
+    xlog("L_INFO", "Suspended transaction [$T(id_index):$T(id_label)] $fU => $rU\n");
     $sht(vtp=>join::$rU) = "" + $T(id_index) + ":" + $T(id_label);
     xdbg("HTable key value [$sht(vtp=>join::$rU)]\n");
+    xlog("L_INFO", "HTable key value [$sht(vtp=>join::$rU)]\n");
 }
 
 route[SENDPUSH] {
@@ -283,7 +285,7 @@ route[SENDPUSH] {
 
 route[PUSHJOIN] {
         $var(hjoin) = 0;
-
+        xlog("L_INFO", "LOCK $tU");
         lock("$tU");
 
         $var(hjoin) = $sht(vtp=>join::$tU);
@@ -291,7 +293,7 @@ route[PUSHJOIN] {
         $sht(vtp=>join::$tU) = $null;
 
         unlock("$tU");
-
+        xlog("L_INFO", "UNLOCK $tU");
         if ($var(hjoin) == 0) {
                 if ($var(hstored))
                         ts_append("location", "$tU");
@@ -302,10 +304,14 @@ route[PUSHJOIN] {
         $var(id_label) = $(var(hjoin){s.select,1,:}{s.int});
 
         xdbg("resuming transaction [$var(id_index):$var(id_label)] $tU ($var(hjoin))\n");
+        xlog("L_INFO", "resuming transaction [$var(id_index):$var(id_label)] $tU ($var(hjoin))\n");
         t_continue("$var(id_index)", "$var(id_label)", "INVRESUME");
 }
 
 route[INVRESUME] {
+
+        $var(location_info) = lookup("location");
+        xlog("L_INFO", "Location information: $var(location_info)\n");
         lookup("location");
         t_relay();
         ts_store();
@@ -402,9 +408,9 @@ route[WITHINDLG] {
 route[REGISTRAR] {
         if (is_method("REGISTER")) {
                 if (!save("location"))
-                         sl_reply_error();
-                 route(PUSHJOIN);
-                 exit;
+                        sl_reply_error();
+                route(PUSHJOIN);
+                exit;
                # if (isflagset(FLT_NATS)) {
                 #        setbflag(FLB_NATB);
                         # uncomment next line to do SIP NAT pinging
