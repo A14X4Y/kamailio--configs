@@ -170,6 +170,30 @@ request_route {
 
         xlog("L_INFO", "START: $rm from $fu (IP:$si:$sp)\n");
 
+  
+        if (is_method("INVITE")) {
+                xlog("L_INFO", "Destination: $ru, toUser: $tU, source: $si, fromUser: $fU, callerId: $ci\n");
+                # lookup("location");
+                
+                if (!lookup("location")) {
+                        send_reply("100", "Trying");
+                        $var(location_info_suspend) = lookup("location");
+                        xlog("L_INFO", "INVITE Suspending Location information: $var(location_info_suspend)\n");
+                        route(SUSPEND);
+                } 
+
+                # else {
+                #         $var(location_info_a) = lookup("location");
+                #         xlog("L_INFO", "INVITE NOT SUSPEND Location information: $var(location_info_a)\n");
+                #         t_relay();
+                #         ts_store();
+                #         $sht(vtp=>stored::$rU) = 1;
+                #         xdbg("Stored transaction [$T(id_index):$T(id_label)] $fU=> $rU\n");
+                #         xlog("L_INFO", "INVITE Stored transaction [$T(id_index):$T(id_label)] $fU=> $rU\n");
+                # }
+            
+        }
+
         if (nat_uac_test(64)) {
                 # Do NAT traversal stuff for requests from a WebSocket
                 # connection - even if it is not behind a NAT!
@@ -180,6 +204,7 @@ request_route {
                 force_rport();
                 if (is_method("REGISTER")) {
                         fix_nated_register();
+                        route(REGISTRAR);
 
                 #       save("location", "0x07");
 
@@ -193,21 +218,6 @@ request_route {
                 }
         }
 
-        if (is_method("INVITE")) {
-                xlog("L_INFO", "Destination: $ru, toUser: $tU, source: $si, fromUser: $fU, callerId: $ci\n");
-               # lookup("location");
-
-                if (!lookup("location")) {
-                        send_reply("100", "Trying");
-                        route(SUSPEND);
-                } else {
-                        t_relay();
-                        ts_store();
-                        $sht(vtp=>stored::$rU) = 1;
-                        xdbg("Stored transaction [$T(id_index):$T(id_label)] $fU=> $rU\n");
-                }
-                route(SENDPUSH);
-        }
 
 
         if (is_method("OPTIONS")) {
@@ -242,7 +252,6 @@ request_route {
                 record_route();
         }
 
-        route(REGISTRAR);
 
         # dispatch requests to foreign domains
         route(SIPOUT);
@@ -263,29 +272,32 @@ request_route {
 }
 
 route[SUSPEND] {
-    if (!t_suspend()) {
-        xlog("Failed suspending transaction [$T(id_index):$T(id_label)]\n");
-        send_reply("501", "Unknown destination");
-        exit;
-    }
+        if (!t_suspend()) {
+                xlog("Failed suspending transaction [$T(id_index):$T(id_label)]\n");
+                send_reply("501", "Unknown destination");
+                exit;
+        }
 
-    xdbg("Suspended transaction [$T(id_index):$T(id_label)] $fU => $rU\n");
-    xlog("L_INFO", "Suspended transaction [$T(id_index):$T(id_label)] $fU => $rU\n");
-    $sht(vtp=>join::$rU) = "" + $T(id_index) + ":" + $T(id_label);
-    xdbg("HTable key value [$sht(vtp=>join::$rU)]\n");
-    xlog("L_INFO", "HTable key value [$sht(vtp=>join::$rU)]\n");
+        xdbg("Suspended transaction [$T(id_index):$T(id_label)] $fU => $rU\n");
+        xlog("L_INFO", "SUSPEND Suspended transaction [$T(id_index):$T(id_label)] $fU => $rU\n");
+        $sht(vtp=>join::$rU) = "" + $T(id_index) + ":" + $T(id_label);
+        xdbg("HTable key value [$sht(vtp=>join::$rU)]\n");
+        xlog("L_INFO", "SUSPEND HTable key value [$sht(vtp=>join::$rU)]\n");
+        xlog("L_INFO","SUSPEND htable key value [$sht(vtp=>id_index::$rU)   --   $sht(vtp=>id_label::$rU)]\n");
+
+        route(SENDPUSH);
+        exit;
 }
 
 route[SENDPUSH] {
-        xlog("L_INFO", "EXEC MSG \n");
+        xlog("L_INFO", "EXEC MSG https://2f53-77-223-85-221.ngrok-free.app/api/graphql \n");
         exec_msg("curl -X POST -H 'Content-Type: application/json' -d '{\"query\ mutation MyMutation { sendIntercomNotification(callerId: \\\"$ci\\\", destination: \\\"$ru\\\", fromUser: \\\"$fU\\\", source: \\\"$si\\\", toUser: \\\"$tU\}\"}' https://2f53-77-223-85-221.ngrok-free.app/api/graphql");
-        sl_send_reply(100, "Pushing...");
-
+        sl_send_reply(100, "Pushing");
 }
 
 route[PUSHJOIN] {
         $var(hjoin) = 0;
-        xlog("L_INFO", "LOCK $tU");
+        xlog("L_INFO", "PUSHJOIN LOCK tU: $tU hjoin: $var(hjoin) \n");
         lock("$tU");
 
         $var(hjoin) = $sht(vtp=>join::$tU);
@@ -293,9 +305,11 @@ route[PUSHJOIN] {
         $sht(vtp=>join::$tU) = $null;
 
         unlock("$tU");
-        xlog("L_INFO", "UNLOCK $tU");
+        xlog("L_INFO", "PUSHJOIN UNLOCK tU: $tU \n");
         if ($var(hjoin) == 0) {
                 if ($var(hstored))
+                        xlog("L_INFO", "PUSHJOIN hstored: $var(hstored) \n");
+                        xlog("L_INFO", "PUSHJOIN tU: $tU \n");
                         ts_append("location", "$tU");
                 return;
         }
@@ -304,19 +318,19 @@ route[PUSHJOIN] {
         $var(id_label) = $(var(hjoin){s.select,1,:}{s.int});
 
         xdbg("resuming transaction [$var(id_index):$var(id_label)] $tU ($var(hjoin))\n");
-        xlog("L_INFO", "resuming transaction [$var(id_index):$var(id_label)] $tU ($var(hjoin))\n");
+        xlog("L_INFO", "PUSHJOIN resuming transaction [$var(id_index):$var(id_label)] tU: $tU  hjoin: ($var(hjoin))\n");
         t_continue("$var(id_index)", "$var(id_label)", "INVRESUME");
 }
 
 route[INVRESUME] {
-
         $var(location_info) = lookup("location");
-        xlog("L_INFO", "Location information: $var(location_info)\n");
+        xlog("L_INFO", "INVRESUME Location information: $var(location_info)\n");
         lookup("location");
         t_relay();
         ts_store();
         $sht(vtp=>stored::$rU) = 1;
         xdbg("stored transaction [$T(id_index):$T(id_label)] $fU => $rU\n");
+        xlog("L_INFO", "INVRESUME stored transaction [$T(id_index):$T(id_label)] $fU => $rU\n");
 }
 
 
@@ -408,17 +422,18 @@ route[WITHINDLG] {
 route[REGISTRAR] {
         if (is_method("REGISTER")) {
                 if (!save("location"))
+                        xlog("L_ERROR", "REGISTER NOT save location \n");
                         sl_reply_error();
                 route(PUSHJOIN);
                 exit;
-               # if (isflagset(FLT_NATS)) {
+                # if (isflagset(FLT_NATS)) {
                 #        setbflag(FLB_NATB);
                         # uncomment next line to do SIP NAT pinging
                         ## setbflag(FLB_NATSIPPING);
                 #}
 
                 #if (!save("location")) {
-                 #       sl_reply_error();
+                #       sl_reply_error();
                 #}
 
                 #exit;
