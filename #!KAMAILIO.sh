@@ -171,16 +171,20 @@ request_route {
         xlog("L_INFO", "START: $rm from $fu (IP:$si:$sp)\n");
 
   
-        if (is_method("INVITE")) {
+        # if (is_method("INVITE")) {
+        if ((is_method("INVITE")) && (!has_totag())) {
                 xlog("L_INFO", "Destination: $ru, toUser: $tU, source: $si, fromUser: $fU, callerId: $ci\n");
+                send_reply("100", "Suspending");
+                route(SUSPEND);
+        }
                 # lookup("location");
                 
-                if (!lookup("location")) {
-                        send_reply("100", "Trying");
-                        $var(location_info_suspend) = lookup("location");
-                        xlog("L_INFO", "INVITE Suspending Location information: $var(location_info_suspend)\n");
-                        route(SUSPEND);
-                } 
+                # if (!lookup("location")) {
+                #         send_reply("100", "Trying");
+                #         $var(location_info_suspend) = lookup("location");
+                #         xlog("L_INFO", "INVITE Suspending Location information: $var(location_info_suspend)\n");
+                #         route(SUSPEND);
+                # } 
 
                 # else {
                 #         $var(location_info_a) = lookup("location");
@@ -191,32 +195,36 @@ request_route {
                 #         xdbg("Stored transaction [$T(id_index):$T(id_label)] $fU=> $rU\n");
                 #         xlog("L_INFO", "INVITE Stored transaction [$T(id_index):$T(id_label)] $fU=> $rU\n");
                 # }
-            
-        }
+        # }
 
-        if (nat_uac_test(64)) {
-                # Do NAT traversal stuff for requests from a WebSocket
-                # connection - even if it is not behind a NAT!
-                # This won't be needed in the future if Kamailio and the
-                # WebSocket client support Outbound and Path.
-                xlog("L_INFO", "Current Contact header: $hdr(Contact)\n");
+        # if (nat_uac_test(64)) {
+        #         # Do NAT traversal stuff for requests from a WebSocket
+        #         # connection - even if it is not behind a NAT!
+        #         # This won't be needed in the future if Kamailio and the
+        #         # WebSocket client support Outbound and Path.
+        #         xlog("L_INFO", "Current Contact header: $hdr(Contact)\n");
 
-                force_rport();
-                if (is_method("REGISTER")) {
-                        fix_nated_register();
-                        route(REGISTRAR);
+        #         force_rport();
+        #         if (is_method("REGISTER")) {
+        #                 fix_nated_register();
+        #                 route(REGISTRAR);
 
-                #       save("location", "0x07");
+        #         #       save("location", "0x07");
 
-                #       remove_hf("Contact");
-                #       insert_hf("Contact: <sip:$fU@MY_IP4_ADDR:5060>\r\n","Call-ID");
+        #         #       remove_hf("Contact");
+        #         #       insert_hf("Contact: <sip:$fU@MY_IP4_ADDR:5060>\r\n","Call-ID");
 
-                } else if (!add_contact_alias()) {
-                        xlog("L_ERR", "Error aliasing contact <$ct>\n");
-                        sl_send_reply("400", "Bad Request");
-                        exit;
-                }
-        }
+        #         } else if (!add_contact_alias()) {
+        #                 xlog("L_ERR", "Error aliasing contact <$ct>\n");
+        #                 sl_send_reply("400", "Bad Request");
+        #                 exit;
+        #         }
+        # }
+
+        # if ( (is_method("REGISTER")) && (($hdr(Expires) != "0") || ($hdr(Contact) !~ "expires=0")) && ($sht(vtp=>id_index::$tU) != $null) ) {
+        #         xlog("L_INFO", "New $rm ru=$ru tu=$tu \n");
+        #         route(JOIN);
+        # }
 
 
 
@@ -272,20 +280,30 @@ request_route {
 }
 
 route[SUSPEND] {
-        if (!t_suspend()) {
-                xlog("Failed suspending transaction [$T(id_index):$T(id_label)]\n");
-                send_reply("501", "Unknown destination");
+        if ( !t_suspend() ) {
+                xlog("L_ERROR","[SUSPEND]  failed suspending trasaction [$T(id_index):$T(id_label)]\n");
+                send_reply("501", "Suspending error");
+                exit;
+        } else {
+                xlog("L_INFO","[SUSPEND]  suspended transaction [$T(id_index):$T(id_label)] $fU=> $rU\n");
+                $sht(vtp=>id_index::$rU) = $T(id_index);
+                $sht(vtp=>id_label::$rU) = $T(id_label);
+                xlog("L_INFO","[SUSPEND] htable key value [$sht(vtp=>id_index::$rU)   --   $sht(vtp=>id_label::$rU)]\n");
+                route(SENDPUSH);
                 exit;
         }
+}
 
-        xdbg("Suspended transaction [$T(id_index):$T(id_label)] $fU => $rU\n");
-        xlog("L_INFO", "SUSPEND Suspended transaction [$T(id_index):$T(id_label)] $fU => $rU\n");
-        $sht(vtp=>join::$rU) = "" + $T(id_index) + ":" + $T(id_label);
-        xdbg("HTable key value [$sht(vtp=>join::$rU)]\n");
-        xlog("L_INFO", "SUSPEND HTable key value [$sht(vtp=>join::$rU)]\n");
-        xlog("L_INFO","SUSPEND htable key value [$sht(vtp=>id_index::$rU)   --   $sht(vtp=>id_label::$rU)]\n");
+route[JOIN] {
+        xlog("L_INFO","[JOIN] htable key value [$sht(vtp=>id_index::$tU)   --   $sht(vtp=>id_label::$tU)]\n");
+        t_continue("$sht(vtp=>id_index::$tU)", "$sht(vtp=>id_label::$tU)", "RESUME");
+}
 
-        route(SENDPUSH);
+#Lookup into location database and relaying.
+route[RESUME] {
+        lookup("location");
+        xlog("L_INFO","[RESUME] rm=$rm ru=$ru du=$du \n");
+        t_relay();
         exit;
 }
 
