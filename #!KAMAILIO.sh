@@ -380,11 +380,14 @@ route[RESUME] {
         lookup("location");
         xlog("L_INFO","[RESUME] rm=$rm ru=$ru du=$du \n");
         t_relay();
+        route(RELAY);
         exit;
 }
 
 # USER location service
 route[LOCATION] {
+                xlog("L_INFO", "[LOCATION] rm=$rm ru=$ru du=$du \n");
+
         if (!lookup("location")) {
                 $var(rc) = $rc;
                 t_newtran();
@@ -398,7 +401,7 @@ route[LOCATION] {
                                 exit;
                 }
         }
-
+        xlog("L_INFO", "[LOCATION] rm=$rm ru=$ru du=$du \n");
         route(RELAY);
         exit;
 }
