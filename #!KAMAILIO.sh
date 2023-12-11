@@ -98,6 +98,7 @@ loadmodule "nathelper.so"
 loadmodule "rtpengine.so"
 loadmodule "outbound.so"
 loadmodule "htable.so"
+loadmodule "exec.so"
 #!ifdef WITH_DEBUG
 loadmodule "debugger.so"
 #!endif
@@ -172,7 +173,7 @@ request_route {
                 xlog("L_INFO", "Current Contact header: $hdr(Contact)\n");
 
                 force_rport();
-                if (is_method("REGISTER")) {
+                if ((is_method("REGISTER") && ($sht(vtp=>id_index::$tU) != $null))) {
                         fix_nated_register();
                         xlog("L_INFO", "New $rm ru=$ru tu=$tu \n");
                         route(JOIN);
@@ -253,6 +254,7 @@ request_route {
 route[RELAY] {
         # enable additional event routes for forwarded requests
         # - serial forking, RTP relaying handling, a.s.o.
+        xlog("L_INFO", "[RELAY] HANDLE: $rm from $fu (IP:$si:$sp)\n");
         if (is_method("INVITE|BYE|UPDATE")) {
                 if (!t_is_set("branch_route")) {
                         t_on_branch("MANAGE_BRANCH");
@@ -349,7 +351,6 @@ route[REGISTRAR] {
 }
 
 route[SUSPEND] {
-        xlog("L_INFO", "SUSPEND\n");
         if ( !t_suspend() ) {
                 xlog("L_ERROR","[SUSPEND]  failed suspending trasaction [$T(id_index):$T(id_label)]\n");
                 send_reply("501", "Suspending error");
@@ -365,8 +366,21 @@ route[SUSPEND] {
 }
 
 route[SENDPUSH] {
-        xlog("L_INFO", "SENDPUSH curl https://2f53-77-223-85-221.ngrok-free.app/api/graphql \n");
+        xlog("L_INFO", "[SENDPUSH] curl https://2f53-77-223-85-221.ngrok-free.app/api/graphql \n");
         exec_msg("curl -X POST -H 'Content-Type: application/json' -d '{\"query\ mutation MyMutation { sendIntercomNotification(callerId: \\\"$ci\\\", destination: \\\"$ru\\\", fromUser: \\\"$fU\\\", source: \\\"$si\\\", toUser: \\\"$tU\}\"}' https://2f53-77-223-85-221.ngrok-free.app/api/graphql");
+        sl_send_reply("100", "Pushing");
+}
+
+route[JOIN] {
+        xlog("L_INFO","[JOIN] htable key value [$sht(vtp=>id_index::$tU)   --   $sht(vtp=>id_label::$tU)]\n");
+        t_continue("$sht(vtp=>id_index::$tU)", "$sht(vtp=>id_label::$tU)", "RESUME");
+}
+#Lookup into location database and relaying.
+route[RESUME] {
+        lookup("location");
+        xlog("L_INFO","[RESUME] rm=$rm ru=$ru du=$du \n");
+        t_relay();
+        exit;
 }
 
 # USER location service
