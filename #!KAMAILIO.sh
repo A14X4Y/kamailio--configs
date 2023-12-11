@@ -97,10 +97,6 @@ loadmodule "websocket.so"
 loadmodule "nathelper.so"
 loadmodule "rtpengine.so"
 loadmodule "outbound.so"
-loadmodule "htable.so"
-loadmodule "tsilo.so"
-loadmodule "exec.so"
-loadmodule "cfgutils.so"
 #!ifdef WITH_DEBUG
 loadmodule "debugger.so"
 #!endif
@@ -129,7 +125,6 @@ modparam("usrloc", "db_mode", 0)
 modparam("rtpengine", "rtpengine_sock", "udp:127.0.0.1:22222")
 modparam("rtpengine", "extra_id_pv", "$avp(extra_id)")
 
-
 # ----- nathelper params -----
 modparam("nathelper", "natping_interval", 30)
 modparam("nathelper", "ping_nated_only", 1)
@@ -137,8 +132,6 @@ modparam("nathelper", "sipping_bflag", FLB_NATSIPPING)
 modparam("nathelper", "sipping_from", "sip:pinger@MY_IP4_ADDR")
 modparam("nathelper|registrar", "received_avp", "$avp(RECEIVED)")
 modparam("usrloc", "nat_bflag", FLB_NATB)
-modparam("htable", "htable","vtp=>size=10;autoexpire=120;dbtable=htable;dbmode=0                                                                                                                                                                                                                                             ")
-
 
 # ----- websocket params -----
 modparam("websocket", "keepalive_mechanism", 1)
@@ -160,8 +153,6 @@ modparam("sipdump", "enable", 1)
 modparam("debugger", "cfgtrace", 1)
 #!endif
 
-modparam("cfgutils", "lock_set_size", 4)
-
 ####### Routing Logic ########
 request_route {
 
@@ -170,71 +161,41 @@ request_route {
 
         xlog("L_INFO", "START: $rm from $fu (IP:$si:$sp)\n");
 
-  
-        # if (is_method("INVITE")) {
-        if ((is_method("INVITE")) && (!has_totag())) {
-                xlog("L_INFO", "Destination: $ru, toUser: $tU, source: $si, fromUser: $fU, callerId: $ci\n");
-                send_reply("100", "Suspending");
-                route(SUSPEND);
+        if (nat_uac_test(64)) {
+                # Do NAT traversal stuff for requests from a WebSocket
+                # connection - even if it is not behind a NAT!
+                # This won't be needed in the future if Kamailio and the
+                # WebSocket client support Outbound and Path.
+                xlog("L_INFO", "Current Contact header: $hdr(Contact)\n");
+
+                force_rport();
+                if (is_method("REGISTER")) {
+                        fix_nated_register();
+
+                #       save("location", "0x07");
+
+                #       remove_hf("Contact");
+                #       insert_hf("Contact: <sip:$fU@MY_IP4_ADDR:5060>\r\n","Call-ID");
+
+                } else if (!add_contact_alias()) {
+                        xlog("L_ERR", "Error aliasing contact <$ct>\n");
+                        sl_send_reply("400", "Bad Request");
+                        exit;
+                }
         }
-                # lookup("location");
-                
-                # if (!lookup("location")) {
-                #         send_reply("100", "Trying");
-                #         $var(location_info_suspend) = lookup("location");
-                #         xlog("L_INFO", "INVITE Suspending Location information: $var(location_info_suspend)\n");
-                #         route(SUSPEND);
-                # } 
 
-                # else {
-                #         $var(location_info_a) = lookup("location");
-                #         xlog("L_INFO", "INVITE NOT SUSPEND Location information: $var(location_info_a)\n");
-                #         t_relay();
-                #         ts_store();
-                #         $sht(vtp=>stored::$rU) = 1;
-                #         xdbg("Stored transaction [$T(id_index):$T(id_label)] $fU=> $rU\n");
-                #         xlog("L_INFO", "INVITE Stored transaction [$T(id_index):$T(id_label)] $fU=> $rU\n");
-                # }
-        # }
+        if (is_method("INVITE")) {
+                xlog("L_INFO", "Destination: $ru, toUser: $tU, source: $si, fromUser: $fU, callerId: $ci\n");
+                lookup("location");
+        }
 
-        # if (nat_uac_test(64)) {
-        #         # Do NAT traversal stuff for requests from a WebSocket
-        #         # connection - even if it is not behind a NAT!
-        #         # This won't be needed in the future if Kamailio and the
-        #         # WebSocket client support Outbound and Path.
-        #         xlog("L_INFO", "Current Contact header: $hdr(Contact)\n");
-
-        #         force_rport();
-        #         if (is_method("REGISTER")) {
-        #                 fix_nated_register();
-        #                 route(REGISTRAR);
-
-        #         #       save("location", "0x07");
-
-        #         #       remove_hf("Contact");
-        #         #       insert_hf("Contact: <sip:$fU@MY_IP4_ADDR:5060>\r\n","Call-ID");
-
-        #         } else if (!add_contact_alias()) {
-        #                 xlog("L_ERR", "Error aliasing contact <$ct>\n");
-        #                 sl_send_reply("400", "Bad Request");
-        #                 exit;
-        #         }
-        # }
-
-        # if ( (is_method("REGISTER")) && (($hdr(Expires) != "0") || ($hdr(Contact) !~ "expires=0")) && ($sht(vtp=>id_index::$tU) != $null) ) {
-        #         xlog("L_INFO", "New $rm ru=$ru tu=$tu \n");
-        #         route(JOIN);
-        # }
-
-
+        # NAT detection
+        route(NATDETECT);
 
         if (is_method("OPTIONS")) {
                 options_reply();
                 exit;
         }
-
-        # NAT detection
-        route(NATDETECT);
 
         msg_apply_changes();
         xlog("L_INFO", "Setting new Contact header: $hdr(Contact)\n");
@@ -247,7 +208,8 @@ request_route {
                 exit;
         }
 
-        # handle requests within SIP dialogs route(WITHINDLG);
+        # handle requests within SIP dialogs
+        route(WITHINDLG);
 
         ### only initial requests (no To tag)
 
@@ -260,6 +222,7 @@ request_route {
                 record_route();
         }
 
+        route(REGISTRAR);
 
         # dispatch requests to foreign domains
         route(SIPOUT);
@@ -278,81 +241,6 @@ request_route {
         # user location service
         route(LOCATION);
 }
-
-route[SUSPEND] {
-        if ( !t_suspend() ) {
-                xlog("L_ERROR","[SUSPEND]  failed suspending trasaction [$T(id_index):$T(id_label)]\n");
-                send_reply("501", "Suspending error");
-                exit;
-        } else {
-                xlog("L_INFO","[SUSPEND]  suspended transaction [$T(id_index):$T(id_label)] $fU=> $rU\n");
-                $sht(vtp=>id_index::$rU) = $T(id_index);
-                $sht(vtp=>id_label::$rU) = $T(id_label);
-                xlog("L_INFO","[SUSPEND] htable key value [$sht(vtp=>id_index::$rU)   --   $sht(vtp=>id_label::$rU)]\n");
-                route(SENDPUSH);
-                exit;
-        }
-}
-
-route[JOIN] {
-        xlog("L_INFO","[JOIN] htable key value [$sht(vtp=>id_index::$tU)   --   $sht(vtp=>id_label::$tU)]\n");
-        t_continue("$sht(vtp=>id_index::$tU)", "$sht(vtp=>id_label::$tU)", "RESUME");
-}
-
-#Lookup into location database and relaying.
-route[RESUME] {
-        lookup("location");
-        xlog("L_INFO","[RESUME] rm=$rm ru=$ru du=$du \n");
-        t_relay();
-        exit;
-}
-
-route[SENDPUSH] {
-        xlog("L_INFO", "EXEC MSG https://2f53-77-223-85-221.ngrok-free.app/api/graphql \n");
-        exec_msg("curl -X POST -H 'Content-Type: application/json' -d '{\"query\ mutation MyMutation { sendIntercomNotification(callerId: \\\"$ci\\\", destination: \\\"$ru\\\", fromUser: \\\"$fU\\\", source: \\\"$si\\\", toUser: \\\"$tU\}\"}' https://2f53-77-223-85-221.ngrok-free.app/api/graphql");
-        sl_send_reply(100, "Pushing");
-}
-
-route[PUSHJOIN] {
-        $var(hjoin) = 0;
-        xlog("L_INFO", "PUSHJOIN LOCK tU: $tU hjoin: $var(hjoin) \n");
-        lock("$tU");
-
-        $var(hjoin) = $sht(vtp=>join::$tU);
-        $var(hstored) = $sht(vtp=>stored::$tU);
-        $sht(vtp=>join::$tU) = $null;
-
-        unlock("$tU");
-        xlog("L_INFO", "PUSHJOIN UNLOCK tU: $tU \n");
-        if ($var(hjoin) == 0) {
-                if ($var(hstored))
-                        xlog("L_INFO", "PUSHJOIN hstored: $var(hstored) \n");
-                        xlog("L_INFO", "PUSHJOIN tU: $tU \n");
-                        ts_append("location", "$tU");
-                return;
-        }
-
-        $var(id_index) = $(var(hjoin){s.select,0,:}{s.int});
-        $var(id_label) = $(var(hjoin){s.select,1,:}{s.int});
-
-        xdbg("resuming transaction [$var(id_index):$var(id_label)] $tU ($var(hjoin))\n");
-        xlog("L_INFO", "PUSHJOIN resuming transaction [$var(id_index):$var(id_label)] tU: $tU  hjoin: ($var(hjoin))\n");
-        t_continue("$var(id_index)", "$var(id_label)", "INVRESUME");
-}
-
-route[INVRESUME] {
-        $var(location_info) = lookup("location");
-        xlog("L_INFO", "INVRESUME Location information: $var(location_info)\n");
-        lookup("location");
-        t_relay();
-        ts_store();
-        $sht(vtp=>stored::$rU) = 1;
-        xdbg("stored transaction [$T(id_index):$T(id_label)] $fU => $rU\n");
-        xlog("L_INFO", "INVRESUME stored transaction [$T(id_index):$T(id_label)] $fU => $rU\n");
-}
-
-
-
 
 # Wrapper for relaying requests
 route[RELAY] {
@@ -413,7 +301,7 @@ route[WITHINDLG] {
                                 # ACK is forwarded statelessy
                                 route(NATMANAGE);
                         } else if (is_method("NOTIFY")) {
-                                # Add Record-Route for in-dialog NOTIFY as per R                                                                                                                                                                                                                                             FC 6665.
+                                # Add Record-Route for in-dialog NOTIFY as per RFC 6665.
                                 record_route();
                         }
                         route(RELAY);
@@ -426,7 +314,7 @@ route[WITHINDLG] {
                                         route(RELAY);
                                         exit;
                                 } else {
-                                        # ACK without matching transaction ... i                                                                                                                                                                                                                                             gnore and discard
+                                        # ACK without matching transaction ... ignore and discard
                                         exit;
                                 }
                         }
@@ -439,22 +327,17 @@ route[WITHINDLG] {
 # Handle SIP registrations
 route[REGISTRAR] {
         if (is_method("REGISTER")) {
-                if (!save("location"))
-                        xlog("L_ERROR", "REGISTER NOT save location \n");
-                        sl_reply_error();
-                route(PUSHJOIN);
-                exit;
-                # if (isflagset(FLT_NATS)) {
-                #        setbflag(FLB_NATB);
+                if (isflagset(FLT_NATS)) {
+                        setbflag(FLB_NATB);
                         # uncomment next line to do SIP NAT pinging
                         ## setbflag(FLB_NATSIPPING);
-                #}
+                }
 
-                #if (!save("location")) {
-                #       sl_reply_error();
-                #}
+                if (!save("location")) {
+                        sl_reply_error();
+                }
 
-                #exit;
+                exit;
         }
 }
 
@@ -524,7 +407,7 @@ route[NATMANAGE] {
         }
 
         $xavp(r=>$T_branch_idx) = "replace-origin replace-session-connection";
-        
+
         if (!nat_uac_test("8")) {
                 $xavp(r=>$T_branch_idx) = $xavp(r=>$T_branch_idx) + " trust-address";
         }
@@ -560,7 +443,7 @@ route[NATMANAGE] {
                 # }
         }
 
-        xlog("L_INFO", "NATMANAGE branch_id:$T_branch_idx ruri: $ru, method:$rm,status:$rs, extra_id: $avp(extra_id), rtpengine_manage: $xavp(r=>$T_branch_idx)\n");
+        xlog("L_INFO", "NATMANAGE branch_id:$T_branch_idx ruri: $ru, method:$rm, status:$rs, extra_id: $avp(extra_id), rtpengine_manage: $xavp(r=>$T_branch_idx)\n");
 
         rtpengine_manage($xavp(r=>$T_branch_idx));
 
@@ -612,10 +495,10 @@ route[SIPOUT] {
 
 route[BRIDGING] {
         if (!has_totag()) {
-                if ($proto =~ "ws" && !($ru =~ "transport=ws")) { # Coming from WS, NOT to WS 
-                    setbflag(FLB_RTPWS); # Need bridging
-                } else if (!($proto =~ "ws") && $ru =~ "transport=ws") { # Coming from NOT WS, going to WS 
-                    setbflag(FLB_RTPWS); # Need bridging
+                if ($proto =~ "ws" && !($ru =~ "transport=ws")) { # Coming from WS, NOT to WS
+                        setbflag(FLB_RTPWS); # Need bridging
+                } else if (!($proto =~ "ws") && $ru =~ "transport=ws") { # Coming from NOT WS, going to WS
+                        setbflag(FLB_RTPWS); # Need bridging
                 }
         }
 }
