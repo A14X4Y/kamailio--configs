@@ -176,6 +176,7 @@ request_route {
                 if ((is_method("REGISTER") && ($sht(vtp=>id_index::$tU) != $null))) {
                         fix_nated_register();
                         xlog("L_INFO", "New $rm ru=$ru tu=$tu \n");
+                        xlog("L_INFO", "REGISTER branch_idx: $T_branch_idx\n");
                         route(JOIN);
 
                 #       save("location", "0x07");
@@ -190,15 +191,16 @@ request_route {
                 }
         }
 
-        if (is_method("INVITE")) {
+
+        # NAT detection
+        route(NATDETECT);
+        if ( (is_method("INVITE")) && (!has_totag()) && ($sht(vtp=>id_index::$tU) == $null)) {
                 xlog("L_INFO", "Destination: $ru, toUser: $tU, source: $si, fromUser: $fU, callerId: $ci\n");
                 # lookup("location");
                 send_reply("100", "Suspending");
                 route(SUSPEND);
+		exit;
         }
-
-        # NAT detection
-        route(NATDETECT);
 
         if (is_method("OPTIONS")) {
                 options_reply();
@@ -379,15 +381,15 @@ route[JOIN] {
 route[RESUME] {
         lookup("location");
         xlog("L_INFO","[RESUME] rm=$rm ru=$ru du=$du \n");
+        xlog("L_INFO","[RESUME] htable key value [$sht(vtp=>id_index::$tU)   --   $sht(vtp=>id_label::$tU)]\n");
+        xlog("L_INFO", "[RESUME] branch_idx: $T_branch_idx\n");
+
         t_relay();
-        route(RELAY);
         exit;
 }
 
 # USER location service
 route[LOCATION] {
-                xlog("L_INFO", "[LOCATION] rm=$rm ru=$ru du=$du \n");
-
         if (!lookup("location")) {
                 $var(rc) = $rc;
                 t_newtran();
@@ -401,7 +403,7 @@ route[LOCATION] {
                                 exit;
                 }
         }
-        xlog("L_INFO", "[LOCATION] rm=$rm ru=$ru du=$du \n");
+
         route(RELAY);
         exit;
 }
