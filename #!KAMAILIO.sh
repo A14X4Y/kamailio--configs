@@ -157,7 +157,7 @@ modparam("sipdump", "enable", 1)
 modparam("debugger", "cfgtrace", 1)
 #!endif
 
-modparam("htable", "htable", "vtp=>size=10;autoexpire=120;")
+modparam("htable", "htable", "vtp=>size=10;autoexpire=60;")
 modparam("jsonrpcs", "fifo_name", "/run/kamailio/kamailio_rpc.fifo")
 
 
@@ -192,16 +192,12 @@ request_route {
                 }
         }
 
-        if (status == "500") {
-                xlog("L_INFO", "IN STATUS 500: $rm from $fu (IP:$si:$sp)\n");
-                route(RESUME);
-        }
-
         msg_apply_changes();
         xlog("L_INFO", "Setting new Contact header: $hdr(Contact)\n");
         if (is_method("INVITE")) {
                 xlog("L_INFO", "Destination: $ru, rU: $rU toUser: $tU, source: $si, fromUser: $fU, callerId: $ci\n");
                 # lookup("location");
+        
                 if ($sht(vtp=>id_index::$tU) == $null) {
                         xlog("L_INFO", "DestinationNoRegisters: $ru, rU: $rU, toUser: $tU, source: $si, fromUser: $fU, callerId: $ci\n");
                         send_reply("100", "Suspending");
@@ -221,11 +217,13 @@ request_route {
                 }
                 exit;
         }
+
         # OPTIONS processing
         if (is_method("OPTIONS")) {
                 options_reply();
                 exit;
         }
+
         # handle registrations
         if (is_method("REGISTER")) {
                 route(REGISTRAR);
@@ -233,8 +231,8 @@ request_route {
                 if ($sht(vtp=>id_index::$tU) != $null) {
                         xlog("L_INFO", "[JOIN] tU=$tU ru=$ru tu=$tu branch_idx=$T_branch_idx [$sht(vtp=>id_index::$tU) -- $sht(vtp=>id_label::$tU)]\n");
                         t_continue("$sht(vtp=>id_index::$tU)", "$sht(vtp=>id_label::$tU)", "RESUME");
+                        exit;
                 }
-                exit;
         }
 
         # handle requests within SIP dialogs
@@ -393,6 +391,10 @@ route[RESUME] {
         xlog("L_INFO", "[RESUME] rm=$rm ru=$ru du=$du tU=$tU  \n");
         xlog("L_INFO", "[RESUME] htable key value [$sht(vtp=>id_index::$tU) -- $sht(vtp=>id_label::$tU)]\n");
         xlog("L_INFO", "[RESUME] branch_idx: $T_branch_idx\n");
+        xlog("L_INFO", "kamcmd htable.delete vtp 'id_index::$tU'");
+        xlog("L_INFO", "kamcmd htable.delete vtp 'id_label::$tU'");
+        exec("kamcmd htable.delete vtp 'id_index::$tU'");
+        exec("kamcmd htable.delete vtp 'id_label::$tU'");
 
         #NAT detection
         route(NATDETECT);
@@ -453,9 +455,12 @@ route[NATDETECT] {
         xlog("L_INFO", "[NATDETECT] rm=$rm ru=$ru du=$du tU=$tU  \n");
         force_rport();
         if (nat_uac_test("19")) {
+                xlog("L_INFO", "[NATDETECT] nat_uac_test = 19() \n");
                 if (is_method("REGISTER")) {
+                        xlog("L_INFO", "[NATDETECT] nat_uac_test = 19() call fix_nated_register \n");
                         fix_nated_register();
                 } else if (is_first_hop()) {
+                        xlog("L_INFO", "[NATDETECT] is_first_hop call set_contact_alias \n");
                         set_contact_alias();
                 }
                 setflag(FLT_NATS);
@@ -465,7 +470,7 @@ route[NATDETECT] {
 
 # NAT handling
 route[NATMANAGE] {
-        xlog("L_INFO", "[NATMANAGE] rm=$rm ru=$ru du=$du tU=$tU  \n");
+        xlog("L_INFO", "[NATMANAGE] rm=$rm ru=$ru du=$du tU=$tU \n");
         if (is_request()) {
                 if (has_totag()) {
                         if (check_route_param("nat=yes")) {
@@ -570,6 +575,7 @@ route[DLGURI] {
         xlog("L_INFO", "[DLGURI] rm=$rm ru=$ru du=$du tU=$tU  \n");
 
         if (!isdsturiset()) {
+                xlog("L_INFO", "[DLGURI] isdsturiset = false  call handle_ruri_alias\n");
                 handle_ruri_alias();
         }
         return;
