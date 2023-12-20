@@ -99,6 +99,7 @@ loadmodule "rtpengine.so"
 loadmodule "outbound.so"
 loadmodule "htable.so"
 loadmodule "exec.so"
+loadmodule "jsonrpcs.so"
 #!ifdef WITH_DEBUG
 loadmodule "debugger.so"
 #!endif
@@ -157,6 +158,8 @@ modparam("debugger", "cfgtrace", 1)
 #!endif
 
 modparam("htable", "htable", "vtp=>size=10;autoexpire=120;")
+modparam("jsonrpcs", "fifo_name", "/run/kamailio/kamailio_rpc.fifo")
+
 
 ####### Routing Logic ########
 request_route {
@@ -189,11 +192,16 @@ request_route {
                 }
         }
 
+        if (status == "500") {
+                xlog("L_INFO", "IN STATUS 500: $rm from $fu (IP:$si:$sp)\n");
+                route(RESUME);
+        }
+
         msg_apply_changes();
         xlog("L_INFO", "Setting new Contact header: $hdr(Contact)\n");
         if (is_method("INVITE")) {
                 xlog("L_INFO", "Destination: $ru, rU: $rU toUser: $tU, source: $si, fromUser: $fU, callerId: $ci\n");
-                lookup("location");
+                # lookup("location");
                 if ($sht(vtp=>id_index::$tU) == $null) {
                         xlog("L_INFO", "DestinationNoRegisters: $ru, rU: $rU, toUser: $tU, source: $si, fromUser: $fU, callerId: $ci\n");
                         send_reply("100", "Suspending");
@@ -302,6 +310,7 @@ route[REQINIT] {
 
 # Handle requests within SIP dialogs
 route[WITHINDLG] {
+        xlog("L_INFO", "[WITHINDLG] tU: $tU fU: $fU \n");
         if (has_totag()) {
                 # sequential request withing a dialog should
                 # take the path determined by record-routing
@@ -384,7 +393,7 @@ route[RESUME] {
         xlog("L_INFO", "[RESUME] rm=$rm ru=$ru du=$du tU=$tU  \n");
         xlog("L_INFO", "[RESUME] htable key value [$sht(vtp=>id_index::$tU) -- $sht(vtp=>id_label::$tU)]\n");
         xlog("L_INFO", "[RESUME] branch_idx: $T_branch_idx\n");
-     
+
         #NAT detection
         route(NATDETECT);
 
